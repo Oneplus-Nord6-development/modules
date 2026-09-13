@@ -20,12 +20,27 @@
 #include <asoc/msm-cdc-supply.h>
 #include <bindings/audio-codec-port-types.h>
 #include <linux/qti-regmap-debugfs.h>
-#include <linux/irqdesc.h>
 
 #include "wcd9378-reg-masks.h"
 #include "wcd9378.h"
 #include "internal.h"
 #include "asoc/bolero-slave-internal.h"
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)
+#include "feedback/oplus_audio_kernel_fb.h"
+#ifdef dev_err
+#undef dev_err
+#define dev_err dev_err_fb_delay
+#endif
+#ifdef dev_err_ratelimited
+#undef dev_err_ratelimited
+#define dev_err_ratelimited dev_err_ratelimited_fb_delay
+#endif
+#ifdef pr_err
+#undef pr_err
+#define pr_err pr_err_fb_delay
+#endif
+#endif /* CONFIG_OPLUS_FEATURE_MM_FEEDBACK */
 
 #define NUM_SWRS_DT_PARAMS 5
 
@@ -67,6 +82,7 @@
 #define MICB_NUM_MAX     3
 
 #define NUM_ATTEMPTS 20
+extern const u32 wcd9378_reg_array[];
 
 #define WCD9378_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
 			SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000 |\
@@ -881,8 +897,13 @@ int wcd9378_mbhc_micb_adjust_voltage(struct snd_soc_component *component,
 			micb_usage, micb_mask, req_vout_ctl);
 
 	if (micb_num == MIC_BIAS_2) {
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)
+		dev_err_not_fb(component->dev,
+			"%s: sj micbias set\n", __func__);
+#else
 		dev_err(component->dev,
 			"%s: sj micbias set\n", __func__);
+#endif
 		snd_soc_component_update_bits(component,
 				WCD9378_IT31_MICB,
 				WCD9378_IT31_MICB_IT31_MICB_MASK,
@@ -1004,9 +1025,13 @@ static int wcd9378_sys_usage_auto_udpate(struct snd_soc_component *component,
 				goto exit;
 			}
 		}
-
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)
+		dev_err(component->dev, "%s: cannot find sys_usage, current: %d, usage_status: %ld, usage_bit: %d\n",
+				__func__, wcd9378->sys_usage, wcd9378->sys_usage_status, sys_usage_bit);
+#else
 		dev_err(component->dev, "%s: cannot find sys_usage\n",
 				__func__);
+#endif
 	} else {
 		clear_bit(sys_usage_bit, &wcd9378->sys_usage_status);
 	}
@@ -1214,8 +1239,7 @@ static int wcd9378_tx_sequencer_enable(struct snd_soc_dapm_widget *w,
 
 			/*Power up TX2 sequencer*/
 			snd_soc_component_update_bits(component, WCD9378_SMP_MIC_CTRL2_PDE11_REQ_PS,
-					WCD9378_SMP_MIC_CTRL2_PDE11_REQ_PS_PDE11_REQ_PS_MASK,
-					PDE_PS0);
+					WCD9378_SMP_MIC_CTRL2_PDE11_REQ_PS_PDE11_REQ_PS_MASK, PDE_PS0);
 			break;
 		default:
 			break;
@@ -1234,10 +1258,10 @@ static int wcd9378_tx_sequencer_enable(struct snd_soc_dapm_widget *w,
 			ret = wcd9378_pde_act_ps_check(component, WCD9378_PDE11_ACT_PS, PDE_PS0);
 			if (ret)
 				dev_err(component->dev,
-						"%s: TX0 sequencer power on failed\n", __func__);
+					"%s: TX0 sequencer power on failed\n", __func__);
 			else
 				dev_dbg(component->dev,
-						"%s: TX0 sequencer power on success\n", __func__);
+					"%s: TX0 sequencer power on success\n", __func__);
 			break;
 		case ADC2:
 			snd_soc_component_update_bits(component, WCD9378_ANA_TX_CH2,
@@ -1252,10 +1276,10 @@ static int wcd9378_tx_sequencer_enable(struct snd_soc_dapm_widget *w,
 							PDE_PS0);
 			if (ret)
 				dev_err(component->dev,
-						"%s: TX1 sequencer power on failed\n", __func__);
+					"%s: TX1 sequencer power on failed\n", __func__);
 			else
 				dev_dbg(component->dev,
-						"%s: TX1 sequencer power on success\n", __func__);
+					"%s: TX1 sequencer power on success\n", __func__);
 			break;
 		case ADC3:
 			snd_soc_component_update_bits(component, WCD9378_ANA_TX_CH3_HPF,
@@ -1266,10 +1290,10 @@ static int wcd9378_tx_sequencer_enable(struct snd_soc_dapm_widget *w,
 							PDE_PS0);
 			if (ret)
 				dev_err(component->dev,
-						"%s: TX2 sequencer power on failed\n", __func__);
+					"%s: TX2 sequencer power on failed\n", __func__);
 			else
 				dev_dbg(component->dev,
-						"%s: TX2 sequencer power on success\n", __func__);
+					"%s: TX2 sequencer power on success\n", __func__);
 			break;
 		}
 		break;
@@ -1335,8 +1359,7 @@ static int wcd9378_tx_sequencer_enable(struct snd_soc_dapm_widget *w,
 
 			/*tear down TX2 sequencer*/
 			snd_soc_component_update_bits(component, WCD9378_SMP_MIC_CTRL2_PDE11_REQ_PS,
-					WCD9378_SMP_MIC_CTRL2_PDE11_REQ_PS_PDE11_REQ_PS_MASK,
-					PDE_PS3);
+					WCD9378_SMP_MIC_CTRL2_PDE11_REQ_PS_PDE11_REQ_PS_MASK, PDE_PS3);
 			break;
 		default:
 			break;
@@ -1362,13 +1385,12 @@ static int wcd9378_tx_sequencer_enable(struct snd_soc_dapm_widget *w,
 
 			if (test_bit(TX1_AMIC3_EN, &wcd9378->sys_usage_status))
 				ret = wcd9378_pde_act_ps_check(component,
-						WCD9378_SMP_MIC_CTRL1_PDE11_REQ_PS,
-						PDE_PS3);
+						WCD9378_SMP_MIC_CTRL1_PDE11_REQ_PS, PDE_PS3);
 
 			if (ret)
 				dev_err(component->dev,
 					"%s: TX1 sequencer tear down failed\n", __func__);
-			else
+		else
 				dev_dbg(component->dev,
 					"%s: TX1 sequencer tear down success\n", __func__);
 			break;
@@ -1523,18 +1545,6 @@ struct wcd9378_mbhc *wcd9378_soc_get_mbhc(struct snd_soc_component *component)
 }
 EXPORT_SYMBOL_GPL(wcd9378_soc_get_mbhc);
 
-static bool wcd9378_check_irq_status(struct wcd_irq_info *irq_info, int irq)
-{
-	struct irq_desc *desc =
-		irq_to_desc(regmap_irq_get_virq(irq_info->irq_chip, irq));
-
-	/*If the value of depth is 0, means the irq has been enabled*/
-	if (desc->depth == 0)
-		return true;
-
-	return false;
-}
-
 static int wcd9378_codec_hphl_dac_event(struct snd_soc_dapm_widget *w,
 					struct snd_kcontrol *kcontrol,
 					int event)
@@ -1679,11 +1689,8 @@ static int wcd9378_codec_enable_hphl_pa(struct snd_soc_dapm_widget *w,
 			wcd9378->update_wcd_event(wcd9378->handle,
 						SLV_BOLERO_EVT_RX_MUTE,
 						(WCD_RX1 << 0x10));
-
-		if (!wcd9378_check_irq_status(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHL_PDM_WD_INT))
-			wcd_enable_irq(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHL_PDM_WD_INT);
+		wcd_enable_irq(&wcd9378->irq_info,
+					WCD9378_IRQ_HPHL_PDM_WD_INT);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		wcd9378_sys_usage_auto_udpate(component, RX0_RX1_HPH_EN, false);
@@ -1735,11 +1742,8 @@ static int wcd9378_codec_enable_hphr_pa(struct snd_soc_dapm_widget *w,
 			wcd9378->update_wcd_event(wcd9378->handle,
 						SLV_BOLERO_EVT_RX_MUTE,
 						(WCD_RX2 << 0x10));
-
-		if (!wcd9378_check_irq_status(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHR_PDM_WD_INT))
-			wcd_enable_irq(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHR_PDM_WD_INT);
+		wcd_enable_irq(&wcd9378->irq_info,
+					WCD9378_IRQ_HPHR_PDM_WD_INT);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		wcd9378_sys_usage_auto_udpate(component, RX0_RX1_HPH_EN, false);
@@ -1791,22 +1795,15 @@ static int wcd9378_codec_enable_aux_pa(struct snd_soc_dapm_widget *w,
 				wcd9378->update_wcd_event(wcd9378->handle,
 							SLV_BOLERO_EVT_RX_MUTE,
 							(WCD_RX2 << 0x10));
-
-			if (!wcd9378_check_irq_status(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHR_PDM_WD_INT))
-				wcd_enable_irq(&wcd9378->irq_info,
+			wcd_enable_irq(&wcd9378->irq_info,
 						WCD9378_IRQ_HPHR_PDM_WD_INT);
-
 			set_bit(WCD_AUX_EN, &wcd9378->status_mask);
 		} else {
 			if (wcd9378->update_wcd_event)
 				wcd9378->update_wcd_event(wcd9378->handle,
 							SLV_BOLERO_EVT_RX_MUTE,
 							(WCD_RX3 << 0x10));
-
-			if (!wcd9378_check_irq_status(&wcd9378->irq_info,
-						WCD9378_IRQ_AUX_PDM_WD_INT))
-				wcd_enable_irq(&wcd9378->irq_info,
+			wcd_enable_irq(&wcd9378->irq_info,
 						WCD9378_IRQ_AUX_PDM_WD_INT);
 		}
 
@@ -1868,23 +1865,16 @@ static int wcd9378_codec_enable_ear_pa(struct snd_soc_dapm_widget *w,
 				wcd9378->update_wcd_event(wcd9378->handle,
 						SLV_BOLERO_EVT_RX_MUTE,
 						(WCD_RX1 << 0x10));
-
-			if (!wcd9378_check_irq_status(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHL_PDM_WD_INT))
-				wcd_enable_irq(&wcd9378->irq_info,
-						WCD9378_IRQ_HPHL_PDM_WD_INT);
-
+			wcd_enable_irq(&wcd9378->irq_info,
+					WCD9378_IRQ_HPHL_PDM_WD_INT);
 			set_bit(WCD_EAR_EN, &wcd9378->status_mask);
 		} else {
 			if (wcd9378->update_wcd_event)
 				wcd9378->update_wcd_event(wcd9378->handle,
 						SLV_BOLERO_EVT_RX_MUTE,
 						(WCD_RX3 << 0x10));
-
-			if (!wcd9378_check_irq_status(&wcd9378->irq_info,
-						WCD9378_IRQ_AUX_PDM_WD_INT))
-				wcd_enable_irq(&wcd9378->irq_info,
-						WCD9378_IRQ_AUX_PDM_WD_INT);
+			wcd_enable_irq(&wcd9378->irq_info,
+					WCD9378_IRQ_AUX_PDM_WD_INT);
 		}
 
 		ret = wcd9378_pde_act_ps_check(component,
@@ -2249,6 +2239,7 @@ static int wcd9378_sa_sequencer_enable(struct snd_soc_dapm_widget *w,
 			regmap_write(wcd9378->regmap, WCD9378_FU42_MUTE_CH1, 0x00);
 			regmap_write(wcd9378->regmap, WCD9378_FU42_MUTE_CH2, 0x00);
 		}
+
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		if (wcd9378_mute_rx_check(component))
@@ -2559,6 +2550,11 @@ static int wcd9378_event_notify(struct notifier_block *block,
 						NULL);
 		wcd9378->mbhc->wcd_mbhc.deinit_in_progress = true;
 		mbhc = &wcd9378->mbhc->wcd_mbhc;
+		#ifdef OPLUS_ARCH_EXTENDS
+		/* Add for fix headset not correct after ssr */
+		mbhc->plug_before_ssr = mbhc->current_plug;
+		pr_info("%s: mbhc->plug_before_ssr=%d\n", __func__, mbhc->plug_before_ssr);
+		#endif /* OPLUS_ARCH_EXTENDS */
 		wcd9378->usbc_hs_status = get_usbc_hs_status(component,
 						mbhc->mbhc_cfg);
 		wcd9378_mbhc_ssr_down(wcd9378->mbhc, component);
@@ -2877,7 +2873,7 @@ static int wcd9378_hph_get_gain(struct snd_kcontrol *kcontrol,
 	offset /= 0x180;
 	ucontrol->value.enumerated.item[0] = offset;
 
-	dev_dbg(component->dev, "%s： offset is 0x%0x\n", __func__, offset);
+	dev_dbg(component->dev, "%s: offset is 0x%0x\n", __func__, offset);
 	return 0;
 }
 
@@ -3394,6 +3390,183 @@ static const struct snd_kcontrol_new wcd9378_snd_controls[] = {
 			wcd9378_tx_master_ch_get, wcd9378_tx_master_ch_put),
 };
 
+#ifdef OPLUS_ARCH_EXTENDS
+/* add for wcd mic die test */
+const char * const die_crk_det_en_text[] = {"0x80", "0xC0"};
+const u8 det_en[] = {0x80, 0xC0};
+const char * const die_crk_det_int1_text[] = {"0xC2", "0x82", "0x42", "0x02"};
+const u8 det_int1[] = {0xC2, 0x82, 0x42, 0x02};
+const char * const die_crk_det_out_text[] = {"0x00"};
+
+static SOC_ENUM_SINGLE_EXT_DECL(die_crk_det_en_enum, die_crk_det_en_text);
+static SOC_ENUM_SINGLE_EXT_DECL(die_crk_det_int1_enum, die_crk_det_int1_text);
+static SOC_ENUM_SINGLE_EXT_DECL(die_crk_det_out_enum, die_crk_det_out_text);
+
+static int get_enum_index_from_reg(const u8 reg_array[], u8 array_num, u8 reg)
+{
+	u8 index = 0;
+
+	for (index = 0; index < array_num; index++) {
+		if (reg_array[index] == reg) {
+			return index;
+		}
+	}
+
+	return index;
+}
+
+static int wcd93xx_die_crk_det_en_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	u8 ctl_value = 0;
+	int ret = -1;
+	struct snd_soc_component *component = NULL;
+
+	if (!kcontrol) {
+		return -EINVAL;
+	}
+
+	component = snd_soc_kcontrol_component(kcontrol);
+	if (!component)
+		return -EINVAL;
+
+	if (ucontrol->value.enumerated.item[0] < ARRAY_SIZE(det_en)) {
+		ctl_value = det_en[ucontrol->value.enumerated.item[0]];
+		ret = snd_soc_component_update_bits(component,
+			WCD9378_DIE_CRACK_DIE_CRK_DET_EN, 0xFF, ctl_value);
+		dev_dbg(component->dev, "%s: det en update value %4x, return %d \n", __func__,ctl_value, ret);
+
+	} else {
+		dev_err(component->dev,
+			"%s: out of index ,please check your input value \n", __func__);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int wcd93xx_die_crk_det_en_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	u32 reg = 0;
+	struct snd_soc_component *component = NULL;
+	struct wcd9378_priv *wcd9378 = NULL;
+
+	if (!kcontrol) {
+		return -EINVAL;
+	}
+	component = snd_soc_kcontrol_component(kcontrol);
+
+	if (!component) {
+		return -EINVAL;
+	}
+	wcd9378 = snd_soc_component_get_drvdata(component);
+
+	if (!wcd9378 || !(wcd9378->regmap)) {
+		return -EINVAL;
+	}
+
+	regmap_read(wcd9378->regmap, WCD9378_DIE_CRACK_DIE_CRK_DET_EN, &reg);
+	dev_dbg(component->dev, "%04x:%04x\n", WCD9378_DIE_CRACK_DIE_CRK_DET_EN, reg);
+
+	ucontrol->value.enumerated.item[0] = get_enum_index_from_reg(det_en, ARRAY_SIZE(det_en), reg);
+
+	return 0;
+}
+
+static int wcd93xx_die_crk_det_int1_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	u8 ctl_value = 0;
+	int ret = -1;
+	struct snd_soc_component *component = NULL;
+
+	if (!kcontrol) {
+		return -EINVAL;
+	}
+	component = snd_soc_kcontrol_component(kcontrol);
+	if (!component)
+		return -EINVAL;
+
+	if (ucontrol->value.enumerated.item[0] < ARRAY_SIZE(det_int1)) {
+		ctl_value = det_int1[ucontrol->value.enumerated.item[0]];
+		ret = snd_soc_component_update_bits(component,
+			WCD9378_DIE_CRACK_INT_DIE_CRK_DET_INT1, 0xFF, ctl_value);
+		dev_dbg(component->dev, "%s: det int1 update value %4x, return %d \n", __func__,ctl_value, ret);
+	} else {
+		dev_err(component->dev,
+			"%s: out of index ,please check your input value \n", __func__);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int wcd93xx_die_crk_det_int1_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	u32 reg = 0;
+	struct snd_soc_component *component = NULL;
+	struct wcd9378_priv *wcd9378 = NULL;
+
+	if (!kcontrol) {
+		return -EINVAL;
+	}
+	component = snd_soc_kcontrol_component(kcontrol);
+
+	if (!component) {
+		return -EINVAL;
+	}
+	wcd9378 = snd_soc_component_get_drvdata(component);
+
+	if (!wcd9378 || !(wcd9378->regmap)) {
+		return -EINVAL;
+	}
+
+	regmap_read(wcd9378->regmap, WCD9378_DIE_CRACK_INT_DIE_CRK_DET_INT1, &reg);
+	dev_dbg(component->dev, "%04x:%04x\n", WCD9378_DIE_CRACK_INT_DIE_CRK_DET_INT1, reg);
+
+	ucontrol->value.enumerated.item[0] = get_enum_index_from_reg(det_int1, ARRAY_SIZE(det_int1), reg);
+
+	return 0;
+}
+
+static int wcd93xx_die_crk_det_out_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol )
+{
+	u32 reg = 0;
+	struct snd_soc_component *component = NULL;
+	struct wcd9378_priv *wcd9378 = NULL;
+
+	if (!kcontrol) {
+		return -EINVAL;
+	}
+	component = snd_soc_kcontrol_component(kcontrol);
+
+	if (!component) {
+		return -EINVAL;
+	}
+	wcd9378 = snd_soc_component_get_drvdata(component);
+
+	if (!wcd9378 || !(wcd9378->regmap)) {
+		return -EINVAL;
+	}
+
+	regmap_read(wcd9378->regmap, WCD9378_DIE_CRACK_DIE_CRK_DET_OUT, &reg);
+	dev_dbg(component->dev, "%04x:%04x\n", WCD9378_DIE_CRACK_DIE_CRK_DET_OUT, reg);
+
+	ucontrol->value.enumerated.item[0] = reg;
+
+	return 0;
+}
+
+static const struct snd_kcontrol_new tx_die_crk_det_control[] = {
+	SOC_ENUM_EXT("DIE_CRK_DET_EN", die_crk_det_en_enum, wcd93xx_die_crk_det_en_get, wcd93xx_die_crk_det_en_put),
+	SOC_ENUM_EXT("DIE_CRK_DET_INT1", die_crk_det_int1_enum, wcd93xx_die_crk_det_int1_get, wcd93xx_die_crk_det_int1_put),
+	SOC_ENUM_EXT("DIE_CRK_DET_OUT", die_crk_det_out_enum, wcd93xx_die_crk_det_out_get, NULL),
+};
+#endif
+
 static const struct snd_kcontrol_new amic1_switch[] = {
 	SOC_DAPM_SINGLE("Switch", SND_SOC_NOPM, 0, 1, 0)
 };
@@ -3841,7 +4014,10 @@ static const struct snd_soc_dapm_route wcd9378_audio_map[] = {
 	{"AUX_RDAC", NULL, "DAC2"},
 	{"SA SEQUENCER", NULL, "AUX_RDAC"},
 	{"AUX_MIXER", "Switch", "SA SEQUENCER",},
+#ifndef CONFIG_SND_SOC_OPLUS_PA_MANAGER
+	/* 2024/11/28, modify for wcd9378 use damp avoid noise issues */
 	{"AUX PGA", NULL, "AUX_MIXER"},
+	#endif /* CONFIG_SND_SOC_OPLUS_PA_MANAGER */
 	{"AUX", NULL, "AUX PGA"},
 };
 
@@ -4090,7 +4266,15 @@ static int wcd9378_soc_codec_probe(struct snd_soc_component *component)
 	wcd9378_init_reg(component);
 
 	wcd9378_micb_value_convert(component);
-
+	#ifdef OPLUS_ARCH_EXTENDS
+	/* add for wcd mic die test */
+	ret = snd_soc_add_component_controls(component, tx_die_crk_det_control,
+		ARRAY_SIZE(tx_die_crk_det_control));
+	if (ret < 0) {
+		dev_err(component->dev,
+			"%s: Failed to add snd ctrls for tx die crk det control\n", __func__);
+	}
+	#endif
 	wcd9378->version = WCD9378_VERSION_1_0;
        /* Register event notifier */
 	wcd9378->nblock.notifier_call = wcd9378_event_notify;
@@ -4106,6 +4290,22 @@ static int wcd9378_soc_codec_probe(struct snd_soc_component *component)
 		}
 	}
 
+	wcd9378->debugfs_info = devm_kzalloc(component->dev,
+				sizeof(struct sdca_debugfs_info),
+				GFP_KERNEL);
+
+	wcd9378->regdump_info = devm_kzalloc(component->dev,
+				sizeof(struct sdca_regdump_info),
+				GFP_KERNEL);
+
+	wcd9378->regdump_info->reg_array = wcd9378_reg_array;
+	wcd9378->regdump_info->reg_num = WCD9378_REGISTERS_ARRAY_NUM;
+	wcd9378->regdump_info->component = component;
+	wcd9378->regdump_info->sdca_readable_register = wcd9378_sdca_readable_register;
+	wcd9378->regdump_info->sdca_writeable_register = wcd9378_sdca_writeable_register;
+
+	sdca_devices_debugfs_dentry_create(wcd9378->debugfs_info,
+				wcd9378->regdump_info);
 exit:
 	return ret;
 }
@@ -4123,6 +4323,7 @@ static void wcd9378_soc_codec_remove(struct snd_soc_component *component)
 		wcd9378->register_notifier(wcd9378->handle,
 						&wcd9378->nblock,
 						false);
+	sdca_devices_debugfs_dentry_remove(wcd9378->debugfs_info);
 }
 
 static int wcd9378_soc_codec_suspend(struct snd_soc_component *component)
@@ -4424,8 +4625,13 @@ static int wcd9378_bind(struct device *dev)
 		goto err;
 	}
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)
+	dev_err_not_fb(wcd9378->dev, "%s: wcd irq init done\n",
+			__func__);
+#else
 	dev_err(wcd9378->dev, "%s: wcd irq init done\n",
 			__func__);
+#endif
 	wcd9378->tx_swr_dev->slave_irq = wcd9378->virq;
 
 	/* Request for watchdog interrupt */
