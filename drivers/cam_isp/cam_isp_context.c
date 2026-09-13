@@ -1180,6 +1180,10 @@ static int __cam_isp_ctx_enqueue_init_request(
 	struct cam_isp_prepare_hw_update_data *req_update_new;
 	struct cam_isp_prepare_hw_update_data *hw_update_data;
 	struct cam_kmd_buf_info *kmd_buff_old = NULL;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	struct cam_isp_context                *ctx_isp =
+		(struct cam_isp_context *) ctx->ctx_priv;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 	spin_lock_bh(&ctx->lock);
 	if (list_empty(&ctx->pending_req_list)) {
@@ -1232,6 +1236,9 @@ static int __cam_isp_ctx_enqueue_init_request(
 				req_isp_new->cfg,
 				sizeof(req_isp_new->cfg[0]) *
 				req_isp_new->num_cfg);
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+			ctx_isp->init_pending_req_cnt++;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 			CAM_DBG(CAM_ISP,
 				"Enqueue req id: %llu, to old req: %llu,, ctx_idx: %u, link: 0x%x",
@@ -2333,10 +2340,17 @@ static int __cam_isp_handle_deferred_buf_done(
 		}
 
 		if (!bubble_handling) {
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+			CAM_WARN_RATE_LIMIT(CAM_ISP,
+				"Unexpected Buf done for res=0x%x on ctx[%u] link[0x%x] for Req %llu, status=%d, possible bh delays",
+				req_isp->fence_map_out[j].resource_handle, ctx->ctx_id,
+				ctx->link_hdl, req->request_id, status);
+#else
 			CAM_WARN(CAM_ISP,
 				"Unexpected Buf done for res=0x%x on ctx[%u] link[0x%x] for Req %llu, status=%d, possible bh delays",
 				req_isp->fence_map_out[j].resource_handle, ctx->ctx_id,
 				ctx->link_hdl, req->request_id, status);
+#endif
 
 			rc = cam_sync_signal(req_isp->fence_map_out[j].sync_id,
 				status, event_cause);
@@ -3534,6 +3548,9 @@ static int __cam_isp_ctx_notify_sof_in_activated_state(
 	uint64_t last_cdm_done_req = 0;
 	struct cam_isp_hw_epoch_event_data *epoch_done_event_data =
 			(struct cam_isp_hw_epoch_event_data *)evt_data;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	char trace[64] = {0};
+#endif
 
 	if (!evt_data) {
 		CAM_ERR(CAM_ISP, "invalid event data");
@@ -3642,9 +3659,18 @@ notify_only:
 			}
 		}
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+		if (ctx_isp->substate_activated == CAM_ISP_CTX_ACTIVATED_BUBBLE) {
+			request_id = 0;
+			memset(trace, 0, sizeof(trace));
+			snprintf(trace, sizeof(trace), "KMD %d_4 Skip Frame", ctx->link_hdl);
+			trace_int(trace, 0);
+			trace_begin_end("Skip Frame: Req[%lld] CAM_ISP_CTX_ACTIVATED_BUBBLE", req->request_id);
+		}
+#else
 		if (ctx_isp->substate_activated == CAM_ISP_CTX_ACTIVATED_BUBBLE)
 			request_id = 0;
-
+#endif
 		if (request_id != 0)
 			ctx_isp->reported_req_id = request_id;
 
@@ -3675,6 +3701,9 @@ static int __cam_isp_ctx_notify_eof_in_activated_state(
 			ctx->ctx_id, ctx->link_hdl);
 	__cam_isp_ctx_update_state_monitor_array(ctx_isp,
 		CAM_ISP_STATE_CHANGE_TRIGGER_CDM_DONE, last_cdm_done_req);
+
+	CAM_DBG(CAM_ISP, "Reset unserved_rup in EOF: %d", atomic_read(&ctx_isp->unserved_rup));
+	atomic_set(&ctx_isp->unserved_rup, 0);
 
 	/* notify reqmgr with eof signal */
 	rc = __cam_isp_ctx_notify_trigger_util(CAM_TRIGGER_POINT_EOF, ctx_isp);
@@ -3824,6 +3853,7 @@ static int __cam_isp_ctx_epoch_in_applied(struct cam_isp_context *ctx_isp,
 			__cam_isp_ctx_send_sof_timestamp(ctx_isp, 0,
 				CAM_REQ_MGR_SOF_EVENT_SUCCESS);
 		}
+
 		return 0;
 	}
 
@@ -5632,6 +5662,7 @@ static int __cam_isp_ctx_apply_req_in_activated_state(
 
 	rc = ctx->hw_mgr_intf->hw_config(ctx->hw_mgr_intf->hw_mgr_priv, &cfg);
 	if (!rc) {
+		ctx_isp->last_apply_settings = false;
 		spin_lock_bh(&ctx->lock);
 		ctx_isp->substate_activated = next_state;
 		ctx_isp->last_applied_req_id = apply->request_id;
@@ -6449,7 +6480,9 @@ static int __cam_isp_ctx_flush_req_in_top_state(
 			flush_req->req_id, ctx->ctx_id, ctx->link_hdl);
 		ctx->last_flush_req = flush_req->req_id;
 
+#ifndef OPLUS_FEATURE_CAMERA_COMMON
 		__cam_isp_ctx_trigger_reg_dump(CAM_HW_MGR_CMD_REG_DUMP_ON_FLUSH, ctx, NULL);
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 		stop_args.ctxt_to_hw_map = ctx_isp->hw_ctx;
 		stop_isp.hw_stop_cmd = CAM_ISP_HW_STOP_IMMEDIATELY;
@@ -7391,12 +7424,16 @@ static int __cam_isp_ctx_release_hw_in_top_state(struct cam_context *ctx,
 	ctx_isp->custom_enabled = false;
 	ctx_isp->use_frame_header_ts = false;
 	ctx_isp->use_default_apply = false;
+	ctx_isp->last_apply_settings = false;
 	ctx_isp->frame_id = 0;
 	ctx_isp->active_req_cnt = 0;
 	ctx_isp->reported_req_id = 0;
 	ctx_isp->reported_frame_id = 0;
 	ctx_isp->hw_acquired = false;
 	ctx_isp->init_received = false;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	ctx_isp->init_pending_req_cnt = 0;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 	ctx_isp->support_consumed_addr = false;
 	ctx_isp->aeb_enabled = false;
 	ctx_isp->sfe_en = false;
@@ -7479,6 +7516,9 @@ static int __cam_isp_ctx_release_dev_in_top_state(struct cam_context *ctx,
 	ctx_isp->reported_frame_id = 0;
 	ctx_isp->hw_acquired = false;
 	ctx_isp->init_received = false;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	ctx_isp->init_pending_req_cnt = 0;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 	ctx_isp->offline_context = false;
 	ctx_isp->vfps_aux_context = false;
 	ctx_isp->rdi_only_context = false;
@@ -7621,6 +7661,9 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	cfg.pf_data = &(req->pf_data);
 	cfg.num_out_map_entries = 0;
 	cfg.num_in_map_entries = 0;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	cfg.init_pending_req_cnt = ctx_isp->init_pending_req_cnt;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 	cfg.buf_tracker = &req->buf_tracker;
 	sfe_ch_ctx_fcg = req_isp->hw_update_data.fcg_info.sfe_fcg_config.ch_ctx_fcg_configs;
 	ife_ch_ctx_fcg = req_isp->hw_update_data.fcg_info.ife_fcg_config.ch_ctx_fcg_configs;
@@ -7690,11 +7733,36 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	if (req_isp->hw_update_data.packet_opcode_type ==
 		CAM_ISP_PACKET_INIT_DEV) {
 		if (ctx->state < CAM_CTX_ACTIVATED) {
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+			if (ctx_isp->init_pending_req_cnt < 1) {
+				rc = __cam_isp_ctx_enqueue_init_request(ctx, req);
+				if (rc)
+					CAM_ERR(CAM_ISP, "Enqueue INIT pkt failed, ctx: %u, link: 0x%x",
+						ctx->ctx_id, ctx->link_hdl);
+				ctx_isp->init_received = true;
+			} else if ((ctx_isp->init_pending_req_cnt < 2) &&
+				(ctx_isp->max_delay > CAM_PIPELINE_DELAY_1)){
+				__cam_isp_ctx_enqueue_request_in_order(ctx, req, true);
+				ctx_isp->init_pending_req_cnt++;
+				CAM_DBG(CAM_ISP,
+					"Enqueue init req with count: %d, max_delay:%d, ctx: %u, link: 0x%x",
+					ctx_isp->init_pending_req_cnt, ctx_isp->max_delay,
+					ctx->ctx_id, ctx->link_hdl);
+			} else {
+				rc = -EINVAL;
+				CAM_ERR(CAM_ISP,
+				    "Received wrong init req cnt:%d, max_delay:%d, ctx_idx: %u, link: 0x%x",
+				    ctx_isp->init_pending_req_cnt, ctx_isp->max_delay,
+				    ctx->ctx_id, ctx->link_hdl);
+				goto put_ref;
+			}
+#else
 			rc = __cam_isp_ctx_enqueue_init_request(ctx, req);
 			if (rc)
 				CAM_ERR(CAM_ISP, "Enqueue INIT pkt failed, ctx: %u, link: 0x%x",
 					ctx->ctx_id, ctx->link_hdl);
 			ctx_isp->init_received = true;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 			if ((ctx_isp->vfps_aux_context) && (req->request_id > 0))
 				ctx_isp->resume_hw_in_flushed = true;
@@ -8926,6 +8994,9 @@ static int __cam_isp_ctx_link_in_acquired(struct cam_context *ctx,
 	ctx_isp->trigger_id = link->trigger_id;
 	ctx_isp->mswitch_default_apply_delay_max_cnt = 0;
 	atomic_set(&ctx_isp->mswitch_default_apply_delay_ref_cnt, 0);
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	ctx_isp->max_delay = link->max_delay;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 	if ((link->mode_switch_max_delay - CAM_MODESWITCH_DELAY_1) > 0) {
 		ctx_isp->handle_mswitch = true;
@@ -9098,6 +9169,10 @@ static int __cam_isp_ctx_start_dev_in_ready(struct cam_context *ctx,
 	} else {
 		list_add_tail(&req->list, &ctx->active_req_list);
 		ctx_isp->active_req_cnt++;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+		if (ctx_isp->init_pending_req_cnt)
+			ctx_isp->init_pending_req_cnt--;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 		CAM_DBG(CAM_REQ,
 			"Move pending req: %lld to active list(cnt: %d) ctx %u link: 0x%x offline %d",
 			req->request_id, ctx_isp->active_req_cnt, ctx->ctx_id, ctx->link_hdl,
@@ -9343,6 +9418,9 @@ static int __cam_isp_ctx_stop_dev_in_activated(struct cam_context *ctx,
 
 	__cam_isp_ctx_stop_dev_in_activated_unlock(ctx, cmd);
 	ctx_isp->init_received = false;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	ctx_isp->init_pending_req_cnt = 0;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 	ctx->state = CAM_CTX_ACQUIRED;
 	trace_cam_context_state("ISP", ctx);
 	return rc;
@@ -9771,6 +9849,9 @@ static int __cam_isp_ctx_apply_default_settings(
 	struct cam_isp_context *ctx_isp =
 		(struct cam_isp_context *) ctx->ctx_priv;
 	struct cam_isp_fcg_prediction_tracker *fcg_tracker;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	struct cam_ctx_request                  *req;
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 	if (!(apply->trigger_point & ctx_isp->subscribe_event)) {
 		CAM_WARN(CAM_ISP,
@@ -9794,6 +9875,22 @@ static int __cam_isp_ctx_apply_default_settings(
 	CAM_DBG(CAM_ISP,
 		"Apply default settings, number of previous continuous skipped frames: %d, ctx_id: %d",
 		fcg_tracker->num_skipped, ctx->ctx_id);
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	if (ctx_isp->init_pending_req_cnt) {
+		spin_lock_bh(&ctx->lock);
+		req = list_first_entry(&ctx->pending_req_list, struct cam_ctx_request,
+			list);
+		spin_unlock_bh(&ctx->lock);
+
+		apply->request_id = req->request_id;
+		CAM_DBG(CAM_ISP, "Apply request:%lld in Substate:%d on link:0x%x",
+			apply->request_id, ctx_isp->substate_activated,
+			ctx->ctx_id, ctx->link_hdl);
+
+		ctx_isp->init_pending_req_cnt--;
+		return __cam_isp_ctx_apply_req_in_epoch(ctx, apply);
+	}
+#endif /* OPLUS_FEATURE_CAMERA_COMMON */
 
 	/*
 	 * Attempt register dump in case of skip frame
@@ -9828,6 +9925,7 @@ static int __cam_isp_ctx_apply_default_settings(
 			CAM_WARN_RATE_LIMIT(CAM_ISP,
 				"Apply default failed in active substate %d rc %d ctx: %u link: 0x%x",
 				ctx_isp->substate_activated, rc, ctx->ctx_id, ctx->link_hdl);
+		ctx_isp->last_apply_settings = true;
 	}
 
 	return rc;
@@ -10354,6 +10452,7 @@ int cam_isp_context_init(struct cam_isp_context *ctx,
 	ctx->custom_enabled = false;
 	ctx->use_frame_header_ts = false;
 	ctx->use_default_apply = false;
+	ctx->last_apply_settings = false;
 	ctx->active_req_cnt = 0;
 	ctx->reported_req_id = 0;
 	ctx->bubble_frame_cnt = 0;
