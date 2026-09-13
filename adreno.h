@@ -95,9 +95,6 @@
 			if (!ret) { \
 				preempt_enable(); \
 				local_irq_restore(_flags); \
-				dev_err_ratelimited(KGSL_DEVICE(_adreno_dev)->dev, \
-						"Timed out waiting to acquire CP semaphore:" \
-						" status=0x%08x\n", ret); \
 			} \
 		} \
 		ret; \
@@ -175,8 +172,6 @@
 #define ADRENO_GMU_WARMBOOT BIT(19)
 /* The GPU supports CLX */
 #define ADRENO_CLX BIT(20)
-/* Enable GMU support for GMU based thermal mitigation */
-#define ADRENO_GMU_THERMAL_MITIGATION BIT(21)
 
 /*
  * Adreno GPU quirks - control bits for various workarounds
@@ -810,6 +805,8 @@ struct adreno_device {
 	u32 dcvs_tuning_penalty_lvl;
 	/** @dcvs_tuning_numbusy_lvl: Current DCVS tuning level for numbusy */
 	u32 dcvs_tuning_numbusy_lvl;
+	/** @dcvs_boost: Tracks if dcvs boost is enabled or disabled */
+	bool dcvs_boost;
 };
 
 /* Time to wait for suspend recovery gate to complete */
@@ -857,6 +854,8 @@ enum adreno_device_flags {
 	ADRENO_DEVICE_FORCE_COLDBOOT = 16,
 	/** @ADRENO_DEVICE_CX_TIMER_INITIALIZED: Set if the CX timer is initialized */
 	ADRENO_DEVICE_CX_TIMER_INITIALIZED = 17,
+	/** @ADRENO_DEVICE_RESET_RECOVERY: Set if the ADRENO device under goes reset recovery */
+	ADRENO_DEVICE_RESET_RECOVERY = 18,
 };
 
 /**
@@ -2151,5 +2150,23 @@ static inline void adreno_irq_free(struct adreno_device *adreno_dev)
 	devm_free_irq(&device->pdev->dev, device->pwrctrl.interrupt_num, device);
 	adreno_dev->irq_mask = 0;
 	device->pwrctrl.interrupt_num = 0;
+}
+
+/**
+ * adreno_gpudev_reset - Adreno gpu device reset
+ * @adreno_dev: Adreno device handle
+ */
+static inline int adreno_gpudev_reset(struct adreno_device *adreno_dev)
+{
+	const struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
+	int ret = -ENODEV;
+
+	if (gpudev->reset) {
+		set_bit(ADRENO_DEVICE_RESET_RECOVERY, &adreno_dev->priv);
+		ret = gpudev->reset(adreno_dev);
+		clear_bit(ADRENO_DEVICE_RESET_RECOVERY, &adreno_dev->priv);
+	}
+
+	return ret;
 }
 #endif /*__ADRENO_H */
