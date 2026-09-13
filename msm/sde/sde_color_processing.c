@@ -25,6 +25,21 @@
 #include "sde_color_processing_aiqe.h"
 #include "sde_aiqe_common.h"
 
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+static int iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+static bool iris_pq_dirty;
+struct sde_cp_node *iris_prop_node[SDE_CP_CRTC_DSPP_MAX] = {};
+#endif /* CONFIG_PXLW_IRIS */
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "oplus_onscreenfingerprint.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "oplus_display_interface.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 #define ALIGNED_OFFSET (U32_MAX & ~(LTM_GUARD_BYTES))
 
 static void _dspp_pcc_install_property(struct drm_crtc *crtc);
@@ -217,6 +232,8 @@ static void _update_pu_feature_enable(struct sde_crtc *sde_crtc,
 		sde_crtc->cp_pu_feature_mask |= BIT(feature);
 	else
 		sde_crtc->cp_pu_feature_mask &= ~BIT(feature);
+
+	SDE_EVT32(feature, enable, sde_crtc->cp_pu_feature_mask);
 }
 
 static int _set_dspp_vlut_feature(struct sde_hw_dspp *hw_dspp,
@@ -238,10 +255,23 @@ static int _set_dspp_pcc_feature(struct sde_hw_dspp *hw_dspp,
 {
 	int ret = 0;
 
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_set_dspp_pcc_feature(hw_cfg, hw_crtc, true);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	if (!hw_dspp || !hw_dspp->ops.setup_pcc)
 		ret = -EINVAL;
 	else
 		hw_dspp->ops.setup_pcc(hw_dspp, hw_cfg);
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_set_dspp_pcc_feature(hw_cfg, hw_crtc, false);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	return ret;
 }
 
@@ -1364,6 +1394,14 @@ static int _sde_cp_crtc_cache_property_helper(struct drm_crtc *crtc,
 	return ret;
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+struct sde_kms *get_kms_(struct drm_crtc *crtc)
+{
+	return get_kms(crtc);
+}
+EXPORT_SYMBOL(get_kms_);
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 u32 _sde_cp_get_num_dspp_mixers(struct sde_crtc *sde_crtc)
 {
 	int i;
@@ -1418,6 +1456,11 @@ void sde_cp_crtc_init(struct drm_crtc *crtc)
 	sde_crtc->ai_scaler_res.src_h = 0;
 	sde_crtc->ai_scaler_res.dst_w = 0;
 	sde_crtc->ai_scaler_res.dst_h = 0;
+
+#if defined(CONFIG_PXLW_IRIS)
+	iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+	memset(iris_prop_node, 0, sizeof(iris_prop_node));
+#endif
 }
 
 static struct sde_crtc_irq_info *_sde_cp_get_intr_node(u32 event,
@@ -1625,18 +1668,39 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 			hw_cfg.mixer_info = hw_lm;
 			hw_cfg.displayh = num_mixers * hw_lm->cfg.out_width;
 			hw_cfg.displayv = hw_lm->cfg.out_height;
+#if defined(CONFIG_PXLW_IRIS)
+			if (iris_is_chip_supported() && (iris_pq_ops == SDE_CP_CRTC_DSPP_PCC))
+				hw_cfg.payload = NULL;
+#endif
 
 			ret = commit_feature(hw_dspp, &hw_cfg, sde_crtc);
 			if (ret)
 				break;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported() && !ret)
+			iris_prop_node[prop_node->feature] = prop_node;
+#endif
 
 		if (ret) {
 			DRM_ERROR("failed to %s feature %d\n",
 				((feature_enabled) ? "enable" : "disable"),
 				prop_node->feature);
+#ifdef OPLUS_FEATURE_DISPLAY
+			oplus_sde_evtlog_dump_all();
+			if (get_eng_version() == FACTORY || get_eng_version() == AGING || get_eng_version() == HIGH_TEMP_AGING) {
+				SDE_DBG_DUMP(SDE_DBG_BUILT_IN_ALL, "panic");
+			}
+#endif /* OPLUS_FEATURE_DISPLAY */
 			goto disable_feature;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported() && iris_pq_dirty) {
+			DRM_DEBUG_DRIVER("Not update list to feature %d\n",
+				prop_node->feature);
+			return;
+		}
+#endif /* CONFIG_PXLW_IRIS */
 	}
 
 	if (feature_enabled) {
@@ -1670,6 +1734,13 @@ disable_feature:
 			hw_cfg.mixer_info = hw_lm;
 			hw_cfg.displayh = num_mixers * hw_lm->cfg.out_width;
 			hw_cfg.displayv = hw_lm->cfg.out_height;
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+			if (oplus_ofp_is_supported()) {
+				if (prop_node->feature == SDE_CP_CRTC_DSPP_GAMUT) {
+					oplus_ofp_bypass_dspp_gamut(&hw_cfg, sde_crtc);
+				}
+			}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 
 			ret = disable_handler(hw_dspp, &hw_cfg, sde_crtc);
 		}
@@ -1805,6 +1876,9 @@ static int _sde_cp_crtc_check_pu_features(struct drm_crtc *crtc)
 	struct sde_crtc_state *sde_crtc_state;
 	struct sde_hw_cp_cfg hw_cfg;
 	struct sde_hw_dspp *hw_dspp;
+	struct drm_connector *conn;
+	struct drm_connector_list_iter conn_iter;
+	struct sde_connector_state *sde_conn_state = NULL;
 
 	if (!crtc) {
 		DRM_ERROR("invalid crtc %pK\n", crtc);
@@ -1843,8 +1917,6 @@ static int _sde_cp_crtc_check_pu_features(struct drm_crtc *crtc)
 
 	memset(&hw_cfg, 0, sizeof(hw_cfg));
 	hw_cfg.num_of_mixers = sde_crtc->num_mixers;
-	hw_cfg.payload = &sde_crtc_state->user_roi_list;
-	hw_cfg.len = sizeof(sde_crtc_state->user_roi_list);
 	hw_cfg.panel_height = sde_crtc_state->base.adjusted_mode.vdisplay;
 	hw_cfg.panel_width = sde_crtc_state->base.adjusted_mode.hdisplay;
 
@@ -1858,6 +1930,41 @@ static int _sde_cp_crtc_check_pu_features(struct drm_crtc *crtc)
 		if (!check_pu_feature ||
 				!(sde_crtc->cp_pu_feature_mask & BIT(i)))
 			continue;
+
+		/* get ROIs from connector if RC and destination scaler is enabled */
+		if (i == SDE_CP_CRTC_DSPP_RC_PU && sde_crtc_state->num_ds_enabled) {
+			mutex_lock(&crtc->dev->mode_config.mutex);
+			drm_connector_list_iter_begin(crtc->dev, &conn_iter);
+			drm_for_each_connector_iter(conn, &conn_iter) {
+				if (conn->state && (conn->state->crtc != crtc))
+					continue;
+
+				if (conn->connector_type == DRM_MODE_CONNECTOR_VIRTUAL)
+					continue;
+
+				sde_conn_state = to_sde_connector_state(conn->state);
+				if (sde_conn_state) {
+					/* Take reference to prevent state changes */
+					drm_connector_get(conn);
+					break;
+				}
+			}
+			drm_connector_list_iter_end(&conn_iter);
+			mutex_unlock(&crtc->dev->mode_config.mutex);
+
+			if (!sde_conn_state) {
+				DRM_ERROR("invalid sde_conn_state %pK\n", sde_conn_state);
+				return -EINVAL;
+			}
+			hw_cfg.payload = (sde_conn_state->rois.num_rects) ?
+				&sde_conn_state->rois : NULL;
+			hw_cfg.len = sizeof(sde_conn_state->rois);
+			drm_connector_put(conn);
+		} else {
+			hw_cfg.payload = (sde_crtc_state->user_roi_list.num_rects) ?
+				&sde_crtc_state->user_roi_list : NULL;
+			hw_cfg.len = sizeof(sde_crtc_state->user_roi_list);
+		}
 
 		SDE_EVT32(i, hw_cfg.panel_width, hw_cfg.panel_height);
 		for (j = 0; j < hw_cfg.num_of_mixers; j++) {
@@ -1954,7 +2061,9 @@ static int _sde_cp_crtc_update_pu_features(struct drm_crtc *crtc, bool *need_flu
 	struct sde_hw_dspp *hw_dspp;
 	struct sde_hw_mixer *hw_lm;
 	struct sde_mdss_cfg *catalog;
-	struct sde_rect user_rect, cached_rect;
+	struct drm_connector *conn;
+	struct drm_connector_list_iter conn_iter;
+	struct sde_connector_state *sde_conn_state = NULL;
 
 	if (!need_flush) {
 		DRM_ERROR("invalid need_flush %pK\n", need_flush);
@@ -1990,40 +2099,62 @@ static int _sde_cp_crtc_update_pu_features(struct drm_crtc *crtc, bool *need_flu
 		}
 	}
 
-	/* early return if not a partial update frame or no change in rois */
-	if (sde_crtc_state->user_roi_list.num_rects == 0) {
-		DRM_DEBUG_DRIVER("no partial update required\n");
-		memset(&sde_crtc_state->cached_user_roi_list, 0,
-				sizeof(struct msm_roi_list));
-	} else {
-		sde_kms_rect_merge_rectangles(&sde_crtc_state->user_roi_list,
-				&user_rect);
-		sde_kms_rect_merge_rectangles(&sde_crtc_state->cached_user_roi_list,
-				&cached_rect);
-		if (sde_kms_rect_is_equal(&user_rect, &cached_rect)) {
-			DRM_DEBUG_DRIVER("no change in list of ROIs\n");
-		}
+	SDE_EVT32(0xbbbb, sde_crtc_state->user_roi_list.num_rects);
+	if (sde_crtc_state->user_roi_list.num_rects) {
+		SDE_EVT32(sde_crtc_state->user_roi_list.num_rects, sde_crtc_state->user_roi_list.roi[0].x1,
+			sde_crtc_state->user_roi_list.roi[0].y1, sde_crtc_state->user_roi_list.roi[0].x2,
+			sde_crtc_state->user_roi_list.roi[0].y2, sde_crtc_state->user_roi_list.spr_roi[0].x1,
+			sde_crtc_state->user_roi_list.spr_roi[0].y1,sde_crtc_state->user_roi_list.spr_roi[0].x2,
+			sde_crtc_state->user_roi_list.spr_roi[0].y2);
 	}
 
 	catalog = get_kms(&sde_crtc->base)->catalog;
 	memset(&hw_cfg, 0, sizeof(hw_cfg));
 	hw_cfg.num_of_mixers = _sde_cp_get_num_dspp_mixers(sde_crtc);
 	hw_cfg.broadcast_disabled = catalog->dma_cfg.broadcast_disabled;
-	hw_cfg.payload = (sde_crtc_state->user_roi_list.num_rects) ?
-		&sde_crtc_state->user_roi_list : NULL;
-	hw_cfg.len = sizeof(sde_crtc_state->user_roi_list);
 	hw_cfg.panel_height = sde_crtc->base.state->adjusted_mode.vdisplay;
 	hw_cfg.panel_width = sde_crtc->base.state->adjusted_mode.hdisplay;
 	for (i = 0; i < hw_cfg.num_of_mixers; i++)
 		hw_cfg.dspp[i] = sde_crtc->mixers[i].hw_dspp;
+
+	SDE_EVT32(0xcccc, sde_crtc->cp_pu_feature_mask);
 
 	for (i = 0; i < SDE_CP_CRTC_MAX_PU_FEATURES; i++) {
 		feature_wrapper set_pu_feature =
 				set_crtc_pu_feature_wrappers[i];
 
 		if (!set_pu_feature ||
-				!(sde_crtc->cp_pu_feature_mask & BIT(i)))
+				!(sde_crtc->cp_pu_feature_mask & BIT(i))) {
+			SDE_EVT32(0xdead, i);
 			continue;
+		}
+
+		/* get ROIs from connector for RC if destination scaler is enabled */
+		if (i == SDE_CP_CRTC_DSPP_RC_PU && sde_crtc_state->num_ds_enabled) {
+			drm_connector_list_iter_begin(crtc->dev, &conn_iter);
+			drm_for_each_connector_iter(conn, &conn_iter) {
+				if (conn->state && (conn->state->crtc != crtc))
+					continue;
+
+				if (conn->connector_type == DRM_MODE_CONNECTOR_VIRTUAL)
+					continue;
+
+				sde_conn_state = to_sde_connector_state(conn->state);
+				break;
+			}
+			drm_connector_list_iter_end(&conn_iter);
+			if (!sde_conn_state) {
+				DRM_ERROR("invalid sde_conn_state %pK\n", sde_conn_state);
+				return -EINVAL;
+			}
+			hw_cfg.payload = (sde_conn_state->rois.num_rects) ?
+				&sde_conn_state->rois : NULL;
+			hw_cfg.len = sizeof(sde_conn_state->rois);
+		} else {
+			hw_cfg.payload = (sde_crtc_state->user_roi_list.num_rects) ?
+				&sde_crtc_state->user_roi_list : NULL;
+			hw_cfg.len = sizeof(sde_crtc_state->user_roi_list);
+		}
 
 		SDE_EVT32(i, hw_cfg.panel_width, hw_cfg.panel_height);
 		for (j = 0; j < hw_cfg.num_of_mixers; j++) {
@@ -2049,10 +2180,6 @@ static int _sde_cp_crtc_update_pu_features(struct drm_crtc *crtc, bool *need_flu
 			}
 		}
 	}
-
-	memcpy(&sde_crtc_state->cached_user_roi_list,
-			&sde_crtc_state->user_roi_list,
-			sizeof(struct msm_roi_list));
 
 	return 0;
 }
@@ -2142,11 +2269,24 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 			DRM_DEBUG_DRIVER("demura_sw_fuse value: 0x%x\n", demura_sw_fuse);
 		}
 	}
-
 	_sde_cp_flush_properties(crtc);
 	_sde_cp_check_mdnie_art_done(crtc);
 	mutex_lock(&sde_crtc->crtc_cp_lock);
 	_sde_clear_ltm_merge_mode(sde_crtc);
+
+
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		iris_pq_dirty = false;
+		if ((iris_get_pq_disable_val() & 0x02) == 2 && iris_pq_ops == SDE_CP_CRTC_DSPP_MAX) {
+			iris_pq_ops = SDE_CP_CRTC_DSPP_PCC;
+			iris_pq_dirty = true;
+		} else if ((iris_get_pq_disable_val() & 0x02) == 0 && iris_pq_ops == SDE_CP_CRTC_DSPP_PCC) {
+			iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+			iris_pq_dirty = true;
+		}
+	}
+#endif /* CONFIG_PXLW_IRIS */
 
 	disable_pending_cp = sde_crtc->disable_pending_cp;
 	sde_crtc->disable_pending_cp = false;
@@ -2155,7 +2295,16 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 			list_empty(&sde_crtc->ad_active) &&
 			list_empty(&sde_crtc->cp_active_list)) {
 		DRM_DEBUG_DRIVER("all lists are empty\n");
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			if (!iris_pq_dirty)
+				goto exit;
+		} else {
+			goto exit;
+		}
+#else /* CONFIG_PXLW_IRIS */
 		goto exit;
+#endif /* CONFIG_PXLW_IRIS */
 	}
 
 	list_for_each_entry_safe(prop_node, n, &sde_crtc->cp_dirty_list,
@@ -2191,6 +2340,26 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 		_sde_cp_ad_set_prop(sde_crtc, AD_IPC_RESET);
 		set_dspp_flush = true;
 	}
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && iris_pq_dirty) {
+		for (i = 0; i < SDE_CP_CRTC_DSPP_MAX; i++) {
+			if (SDE_CP_CRTC_DSPP_RC_MASK == i)
+				continue;
+			prop_node = iris_prop_node[i];
+			if (prop_node == NULL)
+				continue;
+			_sde_cp_crtc_commit_feature(prop_node, sde_crtc);
+			_sde_cp_dspp_flush_helper(sde_crtc, prop_node->feature);
+			/* Set the flush flag to true */
+			if (prop_node->is_dspp_feature)
+				set_dspp_flush = true;
+			else
+				set_lm_flush = true;
+		}
+		_sde_cp_dspp_flush_helper(sde_crtc, SDE_CP_CRTC_DSPP_SB);
+		iris_pq_dirty = false;
+	}
+#endif /* CONFIG_PXLW_IRIS */
 
 	list_for_each_entry_safe(prop_node, n, &sde_crtc->ad_dirty,
 			cp_dirty_list) {
@@ -2706,6 +2875,12 @@ void sde_cp_crtc_mark_features_dirty(struct drm_crtc *crtc)
 		_sde_cp_update_list(prop_node, sde_crtc, true);
 		list_del_init(&prop_node->cp_active_list);
 	}
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+		memset(iris_prop_node, 0, sizeof(iris_prop_node));
+	}
+#endif /* CONFIG_PXLW_IRIS */
 
 	list_for_each_entry_safe(prop_node, n, &sde_crtc->ad_active,
 				 cp_active_list) {
@@ -4909,6 +5084,42 @@ static bool _sde_cp_feature_in_activelist(u32 feature, struct list_head *list)
 
 	return false;
 }
+
+#ifdef OPLUS_FEATURE_DISPLAY
+void oplus_sde_cp_crtc_pcc_change(struct drm_crtc *crtc_drm)
+{
+	struct sde_cp_node *prop_node = NULL, *n = NULL;
+	struct sde_crtc *crtc;
+
+	if (!crtc_drm) {
+		DRM_ERROR("invalid crtc handle");
+		return;
+	}
+	crtc = to_sde_crtc(crtc_drm);
+	mutex_lock(&crtc->crtc_cp_lock);
+	list_for_each_entry_safe(prop_node, n, &crtc->cp_feature_list, cp_feature_list) {
+		if (prop_node->feature != SDE_CP_CRTC_DSPP_PCC
+			&& prop_node->feature != SDE_CP_CRTC_DSPP_GAMUT) /* Gamut should be taken care of too */
+			continue;
+
+		if (_sde_cp_feature_in_dirtylist(prop_node->feature,
+						 &crtc->cp_dirty_list))
+			continue;
+
+		if (_sde_cp_feature_in_activelist(prop_node->feature,
+						 &crtc->cp_active_list)) {
+			_sde_cp_update_list(prop_node, crtc, true);
+			list_del_init(&prop_node->cp_active_list);
+			continue;
+		}
+
+		pr_err("oplus_pcc: %s %d prop_node->feature=%d\n", __func__, __LINE__, prop_node->feature);
+		_sde_cp_update_list(prop_node, crtc, true);
+	}
+
+	mutex_unlock(&crtc->crtc_cp_lock);
+}
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /* this func needs to be called within crtc_cp_lock mutex */
 static struct sde_cp_node *_sde_cp_feature_getnode_activelist(u32 feature, struct list_head *list)
